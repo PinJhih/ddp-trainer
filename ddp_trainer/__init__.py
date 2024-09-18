@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 # check cuda available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -28,7 +29,7 @@ class Trainer:
         optimizer: optim.Optimizer,
         scheduler=None,
     ) -> None:
-        self.model = model
+        self.model = model.to(device)
         self.loss_fn = loss_fn
         self.optimizer = optimizer
 
@@ -36,7 +37,8 @@ class Trainer:
             self.scheduler = scheduler
 
     def fit(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
-        for epoch in range(epochs):
+        progress = tqdm(range(epochs), desc="Train")
+        for _ in progress:
             train_loss = 0.0
             self.model.train()
             for x, y in train_loader:
@@ -53,12 +55,12 @@ class Trainer:
 
                 train_loss += loss.item()
             train_loss /= len(train_loader)
+            loss = {"train_loss": train_loss}
 
-            msg = f"Epoch [{epoch + 1}/{epochs}] train loss: {train_loss}"
             if val_loader is not None:
                 val_loss = self.validation(val_loader)
-                msg += f", validation loss: {val_loss}"
-            print(msg)
+                loss["val_loss"] = val_loss
+            progress.set_postfix(loss)
         return self.model
 
     def validation(self, val_loader: DataLoader):
