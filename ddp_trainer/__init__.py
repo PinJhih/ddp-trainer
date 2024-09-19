@@ -11,7 +11,6 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 
-# set random seed
 def set_random_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -29,6 +28,27 @@ def get_ddp_loader(ds: Dataset, batch_size, num_workers=4, seed=42):
 
 
 class Trainer:
+    def init(seed=42, backend="nccl"):
+        set_random_seed(seed)
+
+        if "RANK" in os.environ:
+            # Save environ variable
+            Trainer.is_distributed = True
+            Trainer.rank = int(os.environ["RANK"])
+            Trainer.local_rank = int(os.environ["LOCAL_RANK"])
+            Trainer.world_size = int(os.environ["WORLD_SIZE"])
+
+            # Config dist and device
+            dist.init_process_group(backend)
+            torch.cuda.set_device(Trainer.local_rank)
+            Trainer.device = torch.device("cuda", Trainer.local_rank)
+        else:
+            Trainer.is_distributed = False
+            Trainer.rank = 0
+            Trainer.local_rank = 0
+            Trainer.world_size = 0
+            Trainer.device = "cuda" if torch.cuda.is_available() else "cpu"
+
     def __init__(
         self,
         model: nn.Module,
@@ -36,36 +56,21 @@ class Trainer:
         optimizer: optim.Optimizer,
         scheduler=None,
     ) -> None:
-        # Init distributed
-        if "RANK" in os.environ:
-            self.is_distributed = True
-            self.rank = int(os.environ["RANK"])
-            self.local_rank = int(os.environ["LOCAL_RANK"])
-            self.world_size = int(os.environ["WORLD_SIZE"])
-
-            dist.init_process_group("nccl")
-            torch.cuda.set_device(self.local_rank)
-            self.device = torch.device("cuda", self.local_rank)
+        if Trainer.is_distributed:
             self.model = torch.nn.parallel.DistributedDataParallel(
                 model.to(self.device),
-                device_ids=[self.local_rank],
-                output_device=self.local_rank,
+                device_ids=[Trainer.local_rank],
+                output_device=Trainer.local_rank,
             )
         else:
-            self.is_distributed = False
-            self.rank = 0
-            self.local_rank = 0
-            self.world_size = 0
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.model = model.to(self.device)
-
+            self.model = model.to(Trainer.device)
         self.loss_fn = loss_fn
         self.optimizer = optimizer
         self.scheduler = scheduler
 
     def fit(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
         progress = range(epochs)
-        if self.local_rank == 0:
+        if Trainer.rank == 0:
             progress = tqdm(progress, desc="Train")
 
         for _ in progress:
@@ -76,7 +81,7 @@ class Trainer:
                 val_loss = self.validation(val_loader)
                 loss["val_loss"] = val_loss
 
-            if self.local_rank == 0:
+            if Trainer.rank == 0:
                 progress.set_postfix(loss)
 
             if self.scheduler is not None:
