@@ -19,14 +19,6 @@ def set_random_seed(seed=42):
     torch.cuda.random.manual_seed_all(seed)
 
 
-def get_ddp_loader(ds: Dataset, batch_size, num_workers=4, seed=42):
-    sampler = DistributedSampler(ds, shuffle=True, seed=seed)
-    loader = DataLoader(
-        ds, batch_size=batch_size, sampler=sampler, num_workers=num_workers
-    )
-    return loader
-
-
 class Trainer:
     def init(seed=42, backend="nccl"):
         set_random_seed(seed)
@@ -48,6 +40,16 @@ class Trainer:
             Trainer.local_rank = 0
             Trainer.world_size = 0
             Trainer.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def get_loader(ds: Dataset, batch_size=64, num_workers=4, seed=42):
+        if Trainer.is_distributed:
+            sampler = DistributedSampler(ds, shuffle=True, seed=seed)
+            loader = DataLoader(
+                ds, batch_size=batch_size, num_workers=num_workers, sampler=sampler
+            )
+        else:
+            loader = DataLoader(ds, batch_size=batch_size, num_workers=num_workers)
+        return loader
 
     def __init__(
         self,
