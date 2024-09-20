@@ -19,5 +19,6 @@ setup(
         "torch",
         "numpy",
         "matplotlib",
+        "tqdm",
     ],
 )
