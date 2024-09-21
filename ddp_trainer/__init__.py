@@ -56,6 +56,7 @@ class Trainer:
         model: nn.Module,
         loss_fn: callable,
         optimizer: optim.Optimizer,
+        eval_fn=None,
         scheduler=None,
     ) -> None:
         if Trainer.is_distributed:
@@ -67,6 +68,7 @@ class Trainer:
         else:
             self.model = model.to(Trainer.device)
         self.loss_fn = loss_fn
+        self.eval_fn = eval_fn
         self.optimizer = optimizer
         self.scheduler = scheduler
 
@@ -76,15 +78,21 @@ class Trainer:
             progress = tqdm(progress, desc="Train")
 
         for _ in progress:
+            # Train
             train_loss = self.train(train_loader)
-            loss = {"train_loss": train_loss}
+            metrics = {"train_loss": train_loss}
 
+            # Validate
             if val_loader is not None:
-                val_loss = self.validation(val_loader)
-                loss["val_loss"] = val_loss
+                val_loss, score = self.validation(val_loader)
+                metrics["val_loss"] = val_loss
 
+                if self.eval_fn is not None:
+                    metrics["eval"] = score
+
+            # Update progress bar
             if Trainer.rank == 0:
-                progress.set_postfix(loss)
+                progress.set_postfix(metrics)
 
             if self.scheduler is not None:
                 self.scheduler.step()
@@ -111,6 +119,8 @@ class Trainer:
 
     def validation(self, val_loader: DataLoader):
         val_loss = 0.0
+        score = 0.0
+
         self.model.eval()
         with torch.no_grad():
             for x, y in val_loader:
@@ -120,5 +130,10 @@ class Trainer:
                 y_pred = self.model(x)
                 loss = self.loss_fn(y_pred, y)
                 val_loss += loss.item()
+
+                # evaluate
+                if self.eval_fn is not None:
+                    score += self.eval_fn(y_pred, y)
         val_loss /= len(val_loader)
-        return val_loss
+        score /= len(val_loader)
+        return val_loss, score
