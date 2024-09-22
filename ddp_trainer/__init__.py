@@ -11,6 +11,13 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 
+is_distributed = False
+rank = 0
+local_rank = 0
+world_size = 0
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 def set_random_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -19,38 +26,39 @@ def set_random_seed(seed=42):
     torch.cuda.random.manual_seed_all(seed)
 
 
+def init(seed=42, backend="nccl"):
+    global is_distributed
+    global rank
+    global local_rank
+    global world_size
+    global device
+
+    set_random_seed(seed)
+    if "RANK" in os.environ:
+        # Save environ variable
+        is_distributed = True
+        rank = int(os.environ["RANK"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+
+        # Config dist and device
+        dist.init_process_group(backend)
+        torch.cuda.set_device(local_rank)
+        Trainer.device = torch.device("cuda", local_rank)
+
+
+def get_loader(ds: Dataset, batch_size=64, num_workers=4, seed=42):
+    if is_distributed:
+        sampler = DistributedSampler(ds, shuffle=True, seed=seed)
+        loader = DataLoader(
+            ds, batch_size=batch_size, num_workers=num_workers, sampler=sampler
+        )
+    else:
+        loader = DataLoader(ds, batch_size=batch_size, num_workers=num_workers)
+    return loader
+
+
 class Trainer:
-    def init(seed=42, backend="nccl"):
-        set_random_seed(seed)
-
-        if "RANK" in os.environ:
-            # Save environ variable
-            Trainer.is_distributed = True
-            Trainer.rank = int(os.environ["RANK"])
-            Trainer.local_rank = int(os.environ["LOCAL_RANK"])
-            Trainer.world_size = int(os.environ["WORLD_SIZE"])
-
-            # Config dist and device
-            dist.init_process_group(backend)
-            torch.cuda.set_device(Trainer.local_rank)
-            Trainer.device = torch.device("cuda", Trainer.local_rank)
-        else:
-            Trainer.is_distributed = False
-            Trainer.rank = 0
-            Trainer.local_rank = 0
-            Trainer.world_size = 0
-            Trainer.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    def get_loader(ds: Dataset, batch_size=64, num_workers=4, seed=42):
-        if Trainer.is_distributed:
-            sampler = DistributedSampler(ds, shuffle=True, seed=seed)
-            loader = DataLoader(
-                ds, batch_size=batch_size, num_workers=num_workers, sampler=sampler
-            )
-        else:
-            loader = DataLoader(ds, batch_size=batch_size, num_workers=num_workers)
-        return loader
-
     def __init__(
         self,
         model: nn.Module,
@@ -59,14 +67,14 @@ class Trainer:
         eval_fn=None,
         scheduler=None,
     ) -> None:
-        if Trainer.is_distributed:
+        if is_distributed:
             self.model = torch.nn.parallel.DistributedDataParallel(
-                model.to(self.device),
-                device_ids=[Trainer.local_rank],
-                output_device=Trainer.local_rank,
+                model.to(device),
+                device_ids=[local_rank],
+                output_device=local_rank,
             )
         else:
-            self.model = model.to(Trainer.device)
+            self.model = model.to(device)
         self.loss_fn = loss_fn
         self.eval_fn = eval_fn
         self.optimizer = optimizer
@@ -74,7 +82,7 @@ class Trainer:
 
     def fit(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
         progress = range(epochs)
-        if Trainer.rank == 0:
+        if rank == 0:
             progress = tqdm(progress, desc="Train")
 
         for _ in progress:
@@ -91,7 +99,7 @@ class Trainer:
                     metrics["eval"] = score
 
             # Update progress bar
-            if Trainer.rank == 0:
+            if rank == 0:
                 progress.set_postfix(metrics)
 
             if self.scheduler is not None:
@@ -103,7 +111,7 @@ class Trainer:
         self.model.train()
         for x, y in train_loader:
             self.optimizer.zero_grad()
-            x, y = x.to(self.device), y.to(self.device)
+            x, y = x.to(device), y.to(device)
 
             # forward propagation
             y_pred = self.model(x)
@@ -124,7 +132,7 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             for x, y in val_loader:
-                x, y = x.to(self.device), y.to(self.device)
+                x, y = x.to(device), y.to(device)
 
                 # forward propagation
                 y_pred = self.model(x)
