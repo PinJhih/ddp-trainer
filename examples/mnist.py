@@ -18,7 +18,9 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 
+import ddp_trainer
 from ddp_trainer import Trainer
+from ddp_trainer.utils import evaluate
 
 
 # Define Model
@@ -49,9 +51,9 @@ def load_dataset():
     )
 
     train_dataset = datasets.MNIST(
-        "../data", train=True, download=True, transform=transform
+        "./data", train=True, download=True, transform=transform
     )
-    test_dataset = datasets.MNIST("../data", train=False, transform=transform)
+    test_dataset = datasets.MNIST("./data", train=False, transform=transform)
     return train_dataset, test_dataset
 
 
@@ -78,7 +80,7 @@ def visualize_predictions(model, test_loader):
 
 
 if __name__ == "__main__":
-    Trainer.init()
+    ddp_trainer.init()
 
     # Hyperparameter
     batch_size = 64
@@ -87,18 +89,19 @@ if __name__ == "__main__":
 
     # Load data
     train_dataset, test_dataset = load_dataset()
-    train_loader = Trainer.get_loader(train_dataset, batch_size)
-    test_loader = Trainer.get_loader(test_dataset, batch_size)
+    train_loader = ddp_trainer.get_loader(train_dataset, batch_size)
+    test_loader = ddp_trainer.get_loader(test_dataset, batch_size)
 
     # Create Trainer
     model = SimpleCNN()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
-    trainer = Trainer(model, loss_fn, optimizer)
+    eval_fn = evaluate.multi_class_accuracy
+    trainer = Trainer(model, loss_fn, optimizer, eval_fn=eval_fn)
 
     # Train
-    model = trainer.fit(epochs, train_loader, test_loader)
+    model = trainer.train(epochs, train_loader, test_loader)
 
-    # Test
-    if Trainer.rank == 0:
-        visualize_predictions(model, test_loader)
+    # Plot training history
+    history = trainer.get_history()
+    history.plot("train_history.png")

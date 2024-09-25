@@ -9,6 +9,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 
 is_distributed = False
@@ -58,6 +59,55 @@ def get_loader(ds: Dataset, batch_size=64, num_workers=4, seed=42):
     return loader
 
 
+class TrainHistory:
+    metric_names = ["train_loss", "val_loss", "eval"]
+
+    def __init__(self):
+        self.history = {"train_loss": [], "val_loss": [], "eval": []}
+
+    def append(self, metrics: dict):
+        for name in TrainHistory.metric_names:
+            if name in metrics:
+                self.history[name].append(metrics[name])
+
+    def get_train_losses(self):
+        return self.history["train_loss"]
+
+    def get_val_losses(self):
+        return self.history["val_loss"]
+
+    def get_evaluations(self):
+        return self.history["eval"]
+
+    def plot(self, path=None):
+        train_losses = self.get_train_losses()
+        val_losses = self.get_val_losses()
+        evaluations = self.get_evaluations()
+
+        plt.figure(figsize=(4, 6))
+        fig, ax1 = plt.subplots()
+
+        ax1.set_title("Training History")
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Loss")
+        ax1.plot(train_losses, label="train loss")
+
+        if len(val_losses) != 0:
+            ax1.plot(val_losses, label="val loss")
+
+        if len(evaluations) != 0:
+            ax2 = ax1.twinx()
+            ax2.set_ylabel("Eval")
+            ax2.plot(evaluations, label="eval", c='green')
+        fig.legend()
+        fig.tight_layout()
+
+        if path is None:
+            plt.show()
+        else:
+            plt.savefig(path)
+
+
 class Trainer:
     def __init__(
         self,
@@ -67,6 +117,7 @@ class Trainer:
         eval_fn=None,
         scheduler=None,
     ) -> None:
+        # Init DDP model
         if is_distributed:
             self.model = torch.nn.parallel.DistributedDataParallel(
                 model.to(device),
@@ -75,19 +126,21 @@ class Trainer:
             )
         else:
             self.model = model.to(device)
+
         self.loss_fn = loss_fn
         self.eval_fn = eval_fn
         self.optimizer = optimizer
         self.scheduler = scheduler
+        self.history = TrainHistory()
 
-    def fit(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
+    def train(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
         progress = range(epochs)
         if rank == 0:
             progress = tqdm(progress, desc="Train")
 
         for _ in progress:
             # Train
-            train_loss = self.train(train_loader)
+            train_loss = self.fit(train_loader)
             metrics = {"train_loss": train_loss}
 
             # Validate
@@ -101,12 +154,14 @@ class Trainer:
             # Update progress bar
             if rank == 0:
                 progress.set_postfix(metrics)
+            self.history.append(metrics)
 
+            # Update LR
             if self.scheduler is not None:
                 self.scheduler.step()
         return self.model
 
-    def train(self, train_loader: DataLoader):
+    def fit(self, train_loader: DataLoader):
         train_loss = 0.0
         self.model.train()
         for x, y in train_loader:
@@ -145,3 +200,6 @@ class Trainer:
         val_loss /= len(val_loader)
         score /= len(val_loader)
         return val_loss, score
+
+    def get_history(self):
+        return self.history
