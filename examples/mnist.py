@@ -100,7 +100,7 @@ if __name__ == "__main__":
     trainer = Trainer(model, loss_fn, optimizer, eval_fn=eval_fn)
 
     # Train
-    model = trainer.train(epochs, train_loader, test_loader)
+    trainer.train(epochs, train_loader, test_loader)
 
     # Plot training history
     history = trainer.get_history()

@@ -98,7 +98,7 @@ class TrainHistory:
         if len(evaluations) != 0:
             ax2 = ax1.twinx()
             ax2.set_ylabel("Eval")
-            ax2.plot(evaluations, label="eval", c='green')
+            ax2.plot(evaluations, label="eval", c="green")
         fig.legend()
         fig.tight_layout()
 
@@ -159,10 +159,9 @@ class Trainer:
             # Update LR
             if self.scheduler is not None:
                 self.scheduler.step()
-        return self.model
 
     def fit(self, train_loader: DataLoader):
-        train_loss = 0.0
+        train_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
         self.model.train()
         for x, y in train_loader:
             self.optimizer.zero_grad()
@@ -176,13 +175,17 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            train_loss += loss.item()
+            train_loss += loss
         train_loss /= len(train_loader)
-        return train_loss
+
+        # compute the global training loss
+        if is_distributed:
+            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)
+        return train_loss.item()
 
     def validation(self, val_loader: DataLoader):
-        val_loss = 0.0
-        score = 0.0
+        val_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
+        metric = torch.tensor(0.0, dtype=torch.float32).to(device)
 
         self.model.eval()
         with torch.no_grad():
@@ -192,14 +195,20 @@ class Trainer:
                 # forward propagation
                 y_pred = self.model(x)
                 loss = self.loss_fn(y_pred, y)
-                val_loss += loss.item()
+                val_loss += loss
 
                 # evaluate
                 if self.eval_fn is not None:
-                    score += self.eval_fn(y_pred, y)
+                    metric += self.eval_fn(y_pred, y)
+
         val_loss /= len(val_loader)
-        score /= len(val_loader)
-        return val_loss, score
+        metric /= len(val_loader)
+
+        # compute the global loss/metric
+        if is_distributed:
+            dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+            dist.all_reduce(metric, op=dist.ReduceOp.AVG)
+        return val_loss.item(), metric.item()
 
     def get_history(self):
         return self.history
