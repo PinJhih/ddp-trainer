@@ -56,4 +56,4 @@ torchrun --standalone --nnodes=1 --nproc_per_node=2 /path/to/your/script.py
 
 ## Examples
 
-Full examples can be found in the *examples/* directory.
+Full examples can be found in the [examples](./examples).

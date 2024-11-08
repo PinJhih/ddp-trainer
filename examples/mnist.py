@@ -89,8 +89,8 @@ if __name__ == "__main__":
 
     # Load data
     train_dataset, test_dataset = load_dataset()
-    train_loader = ddp_trainer.get_loader(train_dataset, batch_size)
-    test_loader = ddp_trainer.get_loader(test_dataset, batch_size)
+    train_loader = ddp_trainer.to_ddp_loader(train_dataset, batch_size)
+    test_loader = ddp_trainer.to_ddp_loader(test_dataset, batch_size)
 
     # Create Trainer
     model = SimpleCNN()

@@ -12,17 +12,16 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
-is_distributed = False
 rank = 0
 local_rank = 0
 world_size = 0
+is_distributed = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def set_random_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
-
     torch.random.manual_seed(seed)
     torch.cuda.random.manual_seed_all(seed)
 
@@ -36,19 +35,19 @@ def init(seed=42, backend="nccl"):
 
     set_random_seed(seed)
     if "RANK" in os.environ:
-        # Save environ variable
+        # Extract environ variable
         is_distributed = True
         rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
 
-        # Config dist and device
+        # Config torch.dist and device
         dist.init_process_group(backend)
         torch.cuda.set_device(local_rank)
-        Trainer.device = torch.device("cuda", local_rank)
+        device = torch.device("cuda", local_rank)
 
 
-def get_loader(ds: Dataset, batch_size=64, num_workers=4, seed=42):
+def to_ddp_loader(ds: Dataset, batch_size=64, num_workers=4, seed=42):
     if is_distributed:
         sampler = DistributedSampler(ds, shuffle=True, seed=seed)
         loader = DataLoader(
@@ -138,18 +137,19 @@ class Trainer:
         if rank == 0:
             progress = tqdm(progress, desc="Train")
 
+        # Training loop
         for _ in progress:
-            # Train
+            # Fit (forward/backward)
             train_loss = self.fit(train_loader)
             metrics = {"train_loss": train_loss}
 
             # Validate
             if val_loader is not None:
-                val_loss, score = self.validation(val_loader)
+                val_loss, val_eval = self.validation(val_loader)
                 metrics["val_loss"] = val_loss
 
                 if self.eval_fn is not None:
-                    metrics["eval"] = score
+                    metrics["eval"] = val_eval
 
             # Update progress bar
             if rank == 0:
@@ -185,7 +185,7 @@ class Trainer:
 
     def validation(self, val_loader: DataLoader):
         val_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
-        metric = torch.tensor(0.0, dtype=torch.float32).to(device)
+        val_eval = torch.tensor(0.0, dtype=torch.float32).to(device)
 
         self.model.eval()
         with torch.no_grad():
@@ -199,16 +199,16 @@ class Trainer:
 
                 # evaluate
                 if self.eval_fn is not None:
-                    metric += self.eval_fn(y_pred, y)
+                    val_eval += self.eval_fn(y_pred, y)
 
         val_loss /= len(val_loader)
-        metric /= len(val_loader)
+        val_eval /= len(val_loader)
 
         # compute the global loss/metric
         if is_distributed:
             dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-            dist.all_reduce(metric, op=dist.ReduceOp.AVG)
-        return val_loss.item(), metric.item()
+            dist.all_reduce(val_eval, op=dist.ReduceOp.AVG)
+        return val_loss.item(), val_eval.item()
 
     def get_history(self):
         return self.history
