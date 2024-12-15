@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
-import matplotlib.pyplot as plt
 
 import ddp_trainer
 from ddp_trainer import Trainer
@@ -45,6 +44,7 @@ class SimpleCNN(nn.Module):
         return torch.log_softmax(x, dim=1)
 
 
+# Load mnist dataset
 def load_dataset():
     transform = transforms.Compose(
         [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
@@ -57,29 +57,8 @@ def load_dataset():
     return train_dataset, test_dataset
 
 
-def visualize_predictions(model, test_loader):
-    device = next(model.parameters()).device
-    data, _ = next(iter(test_loader))
-    data = data[:16].to(device)
-
-    model.eval()
-    with torch.no_grad():
-        output = model(data)
-        preds = output.argmax(dim=1, keepdim=True).cpu().numpy()
-
-    fig, axs = plt.subplots(4, 4, figsize=(4, 4))
-    for i in range(16):
-        x = i // 4
-        y = i % 4
-        axs[x][y].imshow(data[i].cpu().numpy().squeeze(), cmap="gray")
-        axs[x][y].set_title(f"Pred: {preds[i][0]}")
-        axs[x][y].axis("off")
-    fig.suptitle("MNIST Predictions", fontsize=16)
-    plt.tight_layout()
-    plt.savefig("./mnist-pred.png")
-
-
 if __name__ == "__main__":
+    # Initialize distributed processes
     ddp_trainer.init()
 
     # Hyperparameter
@@ -101,7 +80,3 @@ if __name__ == "__main__":
 
     # Train
     trainer.train(epochs, train_loader, test_loader)
-
-    # Plot training history
-    history = trainer.get_history()
-    history.plot("train_history.png")
