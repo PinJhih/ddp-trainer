@@ -131,12 +131,11 @@ class Trainer:
         self.history = TrainHistory()
 
     def train(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
-        progress = range(epochs)
-        if rank == 0:
-            progress = tqdm(progress, desc="Train")
-
         # Training loop
-        for _ in progress:
+        for epoch in range(epochs):
+            if rank == 0:
+                train_loader = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
+
             # Fit (forward/backward)
             train_loss = self.fit(train_loader)
             metrics = {"train_loss": train_loss}
@@ -148,17 +147,17 @@ class Trainer:
 
                 if self.eval_fn is not None:
                     metrics["eval"] = val_eval
-
-            # Update progress bar
+            
+            # Show the metrics
             if rank == 0:
-                progress.set_postfix(metrics)
+                print(metrics)
             self.history.append(metrics)
 
             # Update LR
             if self.scheduler is not None:
                 self.scheduler.step()
 
-    def fit(self, train_loader: DataLoader):
+    def fit(self, train_loader):
         train_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
         self.model.train()
         for x, y in train_loader:
