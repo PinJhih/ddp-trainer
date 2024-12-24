@@ -130,38 +130,39 @@ class Trainer:
         self.scheduler = scheduler
         self.history = TrainHistory()
 
-    def train(self, epochs, train_loader: DataLoader, val_loader=None) -> nn.Module:
-        progress = range(epochs)
-        if rank == 0:
-            progress = tqdm(progress, desc="Train")
-
+    def train(self, epochs, train_loader: DataLoader, val_loader=None) -> None:
         # Training loop
-        for _ in progress:
+        for epoch in range(epochs):
+            if rank == 0:
+                train_loader = tqdm(train_loader, desc=f"Training {epoch+1}/{epochs}")
+
             # Fit (forward/backward)
             train_loss = self.fit(train_loader)
             metrics = {"train_loss": train_loss}
 
             # Validate
             if val_loader is not None:
+                if rank == 0:
+                    val_loader = tqdm(val_loader, desc=f"Validate {epoch+1}/{epochs}")
+
                 val_loss, val_eval = self.validation(val_loader)
                 metrics["val_loss"] = val_loss
 
                 if self.eval_fn is not None:
                     metrics["eval"] = val_eval
 
-            # Update progress bar
-            if rank == 0:
-                progress.set_postfix(metrics)
+            # Save metrics
             self.history.append(metrics)
 
             # Update LR
             if self.scheduler is not None:
                 self.scheduler.step()
 
-    def fit(self, train_loader: DataLoader):
+    def fit(self, train_loader):
         train_loss = torch.tensor(0.0, dtype=torch.float32).to(device)
+
         self.model.train()
-        for x, y in train_loader:
+        for i, (x, y) in enumerate(train_loader):
             self.optimizer.zero_grad()
             x, y = x.to(device), y.to(device)
 
@@ -172,13 +173,22 @@ class Trainer:
             # backward propagation
             loss.backward()
             self.optimizer.step()
-
             train_loss += loss
-        train_loss /= len(train_loader)
 
-        # compute the global training loss
-        if is_distributed:
-            dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)
+            # show the local loss on progress bar
+            if rank == 0:
+                local_loss = train_loss.item() / (i + 1)
+                train_loader.set_postfix(local_loss=local_loss)
+
+            # compute the global training loss
+            if i == len(train_loader) - 1:
+                train_loss /= len(train_loader)
+                if is_distributed:
+                    dist.all_reduce(train_loss, op=dist.ReduceOp.AVG)
+
+                # show the global loss on progress bar
+                if rank == 0:
+                    train_loader.set_postfix(reduced_train_loss=train_loss.item())
         return train_loss.item()
 
     def validation(self, val_loader: DataLoader):
@@ -187,25 +197,38 @@ class Trainer:
 
         self.model.eval()
         with torch.no_grad():
-            for x, y in val_loader:
+            for i, (x, y) in enumerate(val_loader):
                 x, y = x.to(device), y.to(device)
 
                 # forward propagation
                 y_pred = self.model(x)
                 loss = self.loss_fn(y_pred, y)
                 val_loss += loss
+                metrics = {"local_loss": (val_loss / (i + 1)).item()}
 
                 # evaluate
                 if self.eval_fn is not None:
                     val_eval += self.eval_fn(y_pred, y)
+                    metrics["local_eval"] = (val_eval / (i + 1)).item()
 
-        val_loss /= len(val_loader)
-        val_eval /= len(val_loader)
+                # show the local loss on progress bar
+                if rank == 0:
+                    val_loader.set_postfix(metrics)
 
-        # compute the global loss/metric
-        if is_distributed:
-            dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-            dist.all_reduce(val_eval, op=dist.ReduceOp.AVG)
+                # compute the global loss/metric
+                if i == len(val_loader) - 1:
+                    val_loss /= len(val_loader)
+                    val_eval /= len(val_loader)
+
+                    if is_distributed:
+                        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+                        dist.all_reduce(val_eval, op=dist.ReduceOp.AVG)
+
+                    if rank == 0:
+                        metrics = {"reduced_val_loss": val_loss.item()}
+                        if self.eval_fn is not None:
+                            metrics["reduced_val_eval"] = val_eval.item()
+                        val_loader.set_postfix(metrics)
         return val_loss.item(), val_eval.item()
 
     def get_history(self):
